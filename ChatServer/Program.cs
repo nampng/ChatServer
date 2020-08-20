@@ -23,11 +23,22 @@ namespace ChatServer
             }
         }
 
-        public static List<StateObject> states = new List<StateObject>();
+        volatile public static List<StateObject> states = new List<StateObject>();
 
         static void Main(string[] args)
         {
-            IPAddress ipAddress = IPAddress.Parse("192.168.0.191");
+            Console.WriteLine("What IP address would you like to bind to? (Remember to port forward port 60606)");
+            string userInput = Console.ReadLine();
+
+            IPAddress ipAddress;
+
+            while(!IPAddress.TryParse(userInput, out ipAddress))
+            {
+                Console.WriteLine("Try another address.");
+                userInput = Console.ReadLine();
+            }
+
+            //IPAddress ipAddress = IPAddress.Parse("192.168.0.191");
             IPEndPoint msgEndPoint = new IPEndPoint(ipAddress, 60606);
 
             Socket msgSocket = new Socket(ipAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
@@ -49,14 +60,16 @@ namespace ChatServer
                     acceptDone.WaitOne();
                 }
             }
-            catch
+            catch(Exception e)
             {
-
+                Console.WriteLine("BeginAccept method error.");
+                Console.WriteLine(e.ToString());
             }
         }
 
         private static void AcceptCallback(IAsyncResult ar)
         {
+            Console.WriteLine("Connection accepted.");
             Socket socket = (Socket)ar.AsyncState;
             StateObject state = new StateObject();
             state.handler = socket.EndAccept(ar);
@@ -64,7 +77,6 @@ namespace ChatServer
             states.Add(state);
 
             Thread thr = new Thread(() => StartListen(state));
-            thr.SetApartmentState(ApartmentState.MTA);
             thr.Start();
             acceptDone.Set();
         }
@@ -75,14 +87,15 @@ namespace ChatServer
             {
                 try
                 {
+                    Console.WriteLine("Listening...");
                     receiveDone.Reset();
-
                     state.handler.BeginReceive(state.receivedMessage, 0, state.receivedMessage.Length, 0, new AsyncCallback(ReceiveCallback), state);
-
                     receiveDone.WaitOne();
                 }
-                catch
+                catch(Exception e)
                 {
+                    Console.WriteLine("StartListen method error.");
+                    Console.WriteLine(e.ToString());
                     state.handler.Close();
                     break;
                 }
@@ -94,19 +107,23 @@ namespace ChatServer
             StateObject state = (StateObject)ar.AsyncState;
             try
             {
+                Console.WriteLine("Message received.");
                 state.handler.EndReceive(ar);
 
                 string nonparsedMessage = Encoding.UTF8.GetString(state.receivedMessage);
-
-                StartEcho(nonparsedMessage);
-
+                Console.WriteLine("Nonparsed message: " + nonparsedMessage);
+                Console.WriteLine("Starting echo thread.");
+                Thread thr = new Thread(() => StartEcho(nonparsedMessage));
+                thr.Start();
                 //state.handler.Send(EchoMessage(nonparsedMessage));
 
-                state.receivedMessage = new byte[1024];
+                Array.Clear(state.receivedMessage, 0 ,state.receivedMessage.Length);
                 receiveDone.Set();
             }
-            catch
+            catch(Exception e)
             {
+                Console.WriteLine("ReceiveCallback method error.");
+                Console.WriteLine(e.ToString());
                 state.handler.Close();
             }
         }
@@ -114,18 +131,23 @@ namespace ChatServer
         private static void StartEcho(string nonparsedMessage)
         {
             byte[] message = EchoMessage(nonparsedMessage);
+            Console.WriteLine("Message to echo: " + Encoding.UTF8.GetString(message));
+            Console.WriteLine("Echoing...");
+
             List<StateObject> aliveStates = new List<StateObject>();
 
-            foreach(StateObject state in states)
+            foreach (StateObject state in states)
             {
                 try
                 {
+                    Console.WriteLine("Echo.");
                     state.handler.Send(message);
                     aliveStates.Add(state);
                 }
-                catch
+                catch(Exception e)
                 {
-                    state.handler.Close();
+                    Console.WriteLine("Echo message error.");
+                    Console.WriteLine(e.ToString());
                 }
             }
 
@@ -167,7 +189,13 @@ namespace ChatServer
 
                 return message;
             }
-            return Encoding.UTF8.GetBytes("<EOF>");
+            else if(nonparsedMessage.Contains("<BYE>"))
+            {
+                string name = nonparsedMessage.Substring(0, nonparsedMessage.IndexOf("<BYE>"));
+                byte[] message = Encoding.UTF8.GetBytes(name + " has left the chat.<EOF>");
+                return message;
+            }
+            return Encoding.UTF8.GetBytes("SERVER ERROR - COULD NOT PARSE SENT MESSAGE<EOF>");
         }
     }
 }
